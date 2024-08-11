@@ -1,4 +1,5 @@
 import threading
+import time
 import speech_recognition as sr
 import pyttsx3
 import wikipedia
@@ -6,14 +7,11 @@ import datetime
 import pyjokes
 import google.generativeai as genai
 import smtplib
-import os
 import webbrowser as web
 import customtkinter as ctk
 from youtube_search import YoutubeSearch
-from newsapi import NewsApiClient
 from AppOpener import open
 import env
-import time
 
 # Initialize Text-to-Speech engine
 engine = pyttsx3.init()
@@ -21,16 +19,9 @@ engine = pyttsx3.init()
 # Configure Google Generative AI
 genai.configure(api_key=env.gemini_api)
 
-# News API setup
-newsapi = NewsApiClient(api_key=env.news_api)
-
 # Utility functions
 def speak(query):
-    voices = engine.getProperty('voices')
-    engine.setProperty('voice', voices[1].id)
-    print(query)
-    engine.say(query)
-    engine.runAndWait()
+    threading.Thread(target=lambda: engine.say(query) or engine.runAndWait()).start()
 
 def obtain_prompt():
     r = sr.Recognizer()
@@ -38,179 +29,185 @@ def obtain_prompt():
         print("Say something!")
         audio = r.listen(source)
     try:
-        you = r.recognize_google(audio, language="vi-VN")
-        print(you)
-        return you
-    except sr.UnknownValueError:
-        print("Google Speech Recognition could not understand audio")
-    except sr.RequestError as e:
-        print(f"Could not request results from Google Speech Recognition service; {e}")
-    return ""
+        return r.recognize_google(audio, language="vi-VN")
+    except (sr.UnknownValueError, sr.RequestError) as e:
+        print(f"Error with speech recognition: {e}")
+        return ""
 
 def send_email(my_email, password, recipient, msg):
     with smtplib.SMTP_SSL('smtp.gmail.com', 465) as connection:
         connection.login(user=my_email, password=password)
         connection.sendmail(from_addr=my_email, to_addrs=recipient, msg=msg)
 
-# Main Functions
-def wishMe():
-    hour = int(datetime.datetime.now().hour)
-    if hour >= 0 and hour < 12:
-        speak("Good Morning")
-    elif hour >= 12 and hour < 18:
-        speak("Good Afternoon")
-    else:
-        speak("Good Evening")
+def display_typing_effect(bubble, text, delay=0.03):
+    full_text = ""
+    for char in text:
+        full_text += char
+        bubble.configure(text=full_text)
+        app.update_idletasks()
+        time.sleep(delay)
 
-def conversation_with_gemini(prompt):
-    def run_conversation():
-        model = genai.GenerativeModel('gemini-1.0-pro-latest')
-        response = model.generate_content(prompt)
-        gemini_text = response.text
+def handle_conversation(model, prompt, is_wikipedia=False):
+    def conversation_task():
+        response_text = model.generate_content(prompt).text if not is_wikipedia else wikipedia.summary(prompt).split('\n')[0]
+        bubble = create_chat_bubble("", is_user=False)
+        display_typing_effect(bubble, response_text)
+        speak(response_text)
+    threading.Thread(target=conversation_task).start()
 
-        # Create a new bubble without clearing any previous content
-        bubble = ctk.CTkFrame(bubble_frame, corner_radius=15, fg_color="#555555")
-        label = ctk.CTkLabel(bubble, text="", text_color="#ffffff", wraplength=250, justify="left")
-        label.pack(padx=10, pady=5)
-        bubble.pack(anchor="w", padx=10, pady=5)
+def handle_wikipedia_search():
+    speak("What do you want to search on Wikipedia?")
+    create_chat_bubble("What do you want to search on Wikipedia?", is_user=False)
 
-        # Speak the response in a separate thread to keep UI responsive
-        threading.Thread(target=speak, args=(gemini_text,)).start()
-        # Simulate typing effect
-        full_text = ""
-        for char in gemini_text:
-            full_text += char
-            label.configure(text=full_text)
-            app.update_idletasks()
-            time.sleep(0.0438)  # Adjust the speed of the typing effect
+    def fetch_wikipedia_content():
+        search_query = user_input.get().strip()
+        if search_query:
+            try:
+                handle_conversation(wikipedia, search_query, is_wikipedia=True)
+            except wikipedia.exceptions.DisambiguationError as e:
+                disambiguation_msg = f"The term {search_query} is ambiguous. Suggestions: {e.options[:5]}"
+                create_chat_bubble(disambiguation_msg, is_user=False)
+                speak(disambiguation_msg)
+            except wikipedia.exceptions.PageError:
+                error_msg = f"Sorry, no information found on {search_query}."
+                create_chat_bubble(error_msg, is_user=False)
+                speak(error_msg)
+            reset_input()
+        else:
+            speak("Input is empty. Please try again.")
+            create_chat_bubble("Input is empty. Please try again.", is_user=False)
 
+    send_button.configure(command=fetch_wikipedia_content)
 
-    # Run the conversation in a separate thread to keep the UI responsive
-    threading.Thread(target=run_conversation).start()
+def handle_play_song():
+    speak("What song do you want to search for?")
+    create_chat_bubble("What song do you want to search for?", is_user=False)
 
-def read_wikipedia():
-    speak("What do you want to hear?")
-    text = obtain_prompt()
-    if text:
-        results = wikipedia.summary(text).split('\n')
-        speak(results[0])
-        for result in results[1:]:
-            speak("Do you want to hear more?")
-            text = obtain_prompt()
-            if "yes" not in text:
-                break
-            else:
-                speak(result)
+    def fetch_song_content():
+        song_query = user_input.get().strip()
+        if song_query:
+            result = YoutubeSearch(song_query, max_results=1).to_dict()
+            if result:
+                url = 'https://www.youtube.com' + result[0]['url_suffix']
+                web.open(url)
+                speak('Your video is open now')
+                create_chat_bubble("Playing: " + result[0]['title'], is_user=False)
+            reset_input()
+        else:
+            speak("Input is empty. Please try again.")
+            create_chat_bubble("Input is empty. Please try again.", is_user=False)
 
-def open_apps():
-    speak("What do you want to open?")
-    name = obtain_prompt()
-    if name:
-        open(name, match_closest=True, throw_error=False)
+    send_button.configure(command=fetch_song_content)
 
-def help_me():
-    speak("""I can do these things to help you: 
-          1. Tell you the time
-          2. Tell you what is today
-          3. Tell you a joke
-          4. Help you send message
-          5. Tell you about the weather
-          6. Talk to you something on Wikipedia
-          7. Talk to you like a normal person by Gemini
-          8. Open the web for you
-          9. Search YouTube and play music
-          10. Open application""")
-
-def tell_times():
-    now = datetime.datetime.now()
-    speak(now.strftime("%H hours %M minutes"))
-
-def tell_dates():
-    now = datetime.datetime.now()
-    d2 = now.strftime("%B %d, %Y")
-    speak(d2)
-
-def play_song():
-    speak('What do you want to search?')
-    mysong = obtain_prompt()
-    if mysong:
-        result = YoutubeSearch(mysong, max_results=1).to_dict()
-        if result:
-            url = 'https://www.youtube.com' + result[0]['url_suffix']
-            web.open(url)
-            speak('Your video is open now')
-
-def open_fec_edu_vn():
+def handle_open_website():
     speak("What website do you want to open?")
-    domain = obtain_prompt()
-    if domain:
-        web.open(domain)
+    create_chat_bubble("What website do you want to open?", is_user=False)
+
+    def fetch_website_content():
+        domain = user_input.get().strip()
+        create_chat_bubble(domain, True)
+        if domain:
+            web.open(domain)
+            speak(f"Opening {domain}")
+            create_chat_bubble(f"Opening {domain}", is_user=False)
+            reset_input()
+        else:
+            speak("Input is empty. Please try again.")
+            create_chat_bubble("Input is empty. Please try again.", is_user=False)
+
+    send_button.configure(command=fetch_website_content)
+
+def handle_open_apps():
+    speak("What application do you want to open?")
+    create_chat_bubble("What application do you want to open?", is_user=False)
+
+    def fetch_app_content():
+        app_name = user_input.get().strip()
+        if app_name:
+            open(app_name, match_closest=True, throw_error=False)
+            speak(f"Opening {app_name}")
+            create_chat_bubble(f"Opening {app_name}", is_user=False)
+            reset_input()
+        else:
+            speak("Input is empty. Please try again.")
+            create_chat_bubble("Input is empty. Please try again.", is_user=False)
+
+    send_button.configure(command=fetch_app_content)
+
+def reset_input():
+    user_input.delete(0, ctk.END)
+    send_button.configure(command=send_message)
 
 def handle_send_email():
     speak("What should I say?")
     create_chat_bubble("What should I say?", is_user=False)
 
-    # Capture the user's input for the email content
     def capture_email_content():
         msg = user_input.get().strip()
         if msg:
             send_email(env.gmail_id, env.gmail_password, env.gmail_id, msg)
             speak("Your email has been sent!")
             create_chat_bubble("Your email has been sent!", is_user=False)
-            user_input.delete(0, ctk.END)
-            
-            # Reset the send button to the original command after sending the email
-            send_button.configure(command=send_message)
+            reset_input()
         else:
             speak("Message is empty. Please try again.")
             create_chat_bubble("Message is empty. Please try again.", is_user=False)
 
-    # Rebind the Send button to send the email after the user types the message
     send_button.configure(command=capture_email_content)
-
+def help_me():
+    help_text = """I can do these things to help you:
+                   1. Tell you the time
+                   2. Tell you what is today
+                   3. Tell you a joke
+                   4. Help you send message
+                   5. Tell you about the weather
+                   6. Talk to you something on Wikipedia
+                   7. Talk to you like a normal person by Gemini
+                   8. Open the web for you
+                   9. Search YouTube and play music
+                   10. Open application"""
+    threading.Thread(target=speak, args=(help_text,)).start()
 def handle_message(message):
-    if "hello" in message.lower():
-        speak("Hello")
+    message = message.lower()
+    if "hello" in message:
         create_chat_bubble("Hello", is_user=False)
-    elif "send email" in message.lower():
+        speak("Hello")
+    elif "send email" in message:
         handle_send_email()
-    elif "time" in message.lower():
-        tell_times()
-    elif "date" in message.lower():
-        tell_dates()
-    elif "joke" in message.lower():
+    elif "time" in message:
+        speak(datetime.datetime.now().strftime("%H hours %M minutes"))
+    elif "date" in message:
+        speak(datetime.datetime.now().strftime("%B %d, %Y"))
+    elif "joke" in message:
         speak(pyjokes.get_joke())
-    elif "wikipedia" in message.lower():
-        read_wikipedia()
-    elif "open website" in message.lower():
-        open_fec_edu_vn()
-    elif "play song" in message.lower():
-        play_song()
-    elif "open app" in message.lower():
-        open_apps()
-    elif "help" in message.lower():
+    elif "wikipedia" in message:
+        handle_wikipedia_search()
+    elif "gemini" in message:
+        handle_conversation(genai.GenerativeModel('gemini-1.0-pro-latest'), obtain_prompt())
+    elif "open website" in message:
+        handle_open_website()
+    elif "play song" in message:
+        handle_play_song()
+    elif "open app" in message:
+        handle_open_apps()
+    elif "help" in message:
         help_me()
     else:
-        # Use Gemini if no keywords match
-        conversation_with_gemini(message)
+        handle_conversation(genai.GenerativeModel('gemini-1.0-pro-latest'), message)
 
 # UI Setup
 def create_chat_bubble(text, is_user=True):
     bubble_color = "#00aaff" if is_user else "#555555"
-    text_color = "#ffffff"
-
-    bubble = ctk.CTkFrame(bubble_frame, corner_radius=15, fg_color=bubble_color)
-    label = ctk.CTkLabel(bubble, text=text, text_color=text_color, wraplength=250, justify="left")
-    label.pack(padx=10, pady=5)
-
+    bubble = ctk.CTkLabel(bubble_frame, text=text, text_color="#ffffff", wraplength=250, justify="left", fg_color=bubble_color, corner_radius=15, padx=10, pady=5)
     bubble.pack(anchor="e" if is_user else "w", padx=10, pady=5)
     canvas.yview_moveto(1.0)
+    return bubble
 
 def send_message():
     message = user_input.get()
     if message:
         create_chat_bubble(message, is_user=True)
-        threading.Thread(target=handle_message, args= message)
+        handle_message(message)
         user_input.delete(0, ctk.END)
 
 if __name__ == "__main__":
